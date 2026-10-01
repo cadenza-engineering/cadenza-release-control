@@ -23,3 +23,14 @@ Final proposed workflow digest `e6535e4cc4de930746316226e5435585bec5aac4198ac999
 Thirteen browser stages and two fixture seed stages use `!cancelled() && steps.browser_health.outcome == success` after verified local health. Later independent stages execute after an earlier test failure; no continue-on-error or final failure suppression is introduced. A failed stage still fails the job. Build/install/health failure does not run these tests. Exact cleanup and artifact stages remain always-run. Official status semantics were reviewed at https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions .
 
 The exact video 201 assertion remains required; no schema workaround or promise reduction is included. The Competition native My prospects handoff remains unresolved, with stronger exact destination diagnostics rather than a bypass. All corrected application lint/types/unit/native gates and independent source review remain pending. This draft does not activate the pin or perform a release.
+
+
+## 2026-10-01: proposed V10 exact CI workflow enrollment
+
+Proposed `.github/workflows/ci.yml` SHA-256 `7918a497019c82a8fd211542201842d0930b24e0199a97136662921d3a7b53bf` replaces `e6535e4cc4de930746316226e5435585bec5aac4198ac999802b190359627c8e` in `runtimePolicy.workflowSha256`. The separate reviewed owner-prebuilt-build workflow digest remains6ef76c86099d9b8b14ffe01acda1ea0a23b42bbd5c657da9e259c527eac1f0bc. Gate core requires CI evidence digest equal runtimePolicy.workflowSha256; prepare-artifact separately checks reviewedBuilderWorkflowSha256 against owner-prebuilt-build.yml. A discarded private proposal incorrectly changed the separate builder digest; it was never pushed/adopted.
+
+V9 early storage diagnostic artifact/tee preserves native failure status; V10 adds three changed browser specs to existing explicit lint. Every native command, role seed, guard, timeout, cleanup and late artifact remains retained. Generated log/context content is not preemptively certified credential-free; retain private artifact access.
+
+Previous application80d0 run36883001357 passed migration/quality/build/health but selected browser markers364PASS/37FAIL/12SKIP; storage cleanup failed. Five later storage cases stopped at dirty-bucket preflight, so 2GiB behavior remains untested. Focused repairs require full CI/native reproof. Original inventories, provider, protected release and sale clearance remain OPEN.
+
+Exactly three paths: nested CI workflow digest, enrollment distribution hash/byte entry, this source review. All27 baseline/proposed package hash/bytes checked. Other runtime policy/requiredchecks, builder/toolchain, approver, signer, permissions, governance, dispatch identities unchanged. No activepin, merge, release, production data or credential changes.
