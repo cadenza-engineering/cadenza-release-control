@@ -1,0 +1,184 @@
+name: One-shot VAN protected release
+run-name: Release VAN article at 77cb68b4c87176c07bb6ade668e567bd81edb1cf
+on:
+  push:
+    branches:
+      - codex/van-release-20261002-2317
+    paths:
+      - .github/workflows/one-shot-van-release.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      SOURCE_REPOSITORY: cadenza-engineering/cadenza
+      CONTROL_REPOSITORY: cadenza-engineering/cadenza-release-control
+      RELEASE_SHA: 77cb68b4c87176c07bb6ade668e567bd81edb1cf
+      CONTROL_SHA: 93b074bfab088ff71140ad487756cc9584506ce6
+      CI_RUN_ID: "37076190782"
+      BASELINE_SHA: 41ffee56a878129c5b29008f602fac2beb6bafb8
+      BASELINE_DEPLOYMENT_ID: dpl_WH2ktBY2FgzudTBLrU8NbngwHog8
+      LEDGER_SHA256: bda788f2b3c67667d12de05972e088175dc9ece1e382741d101973f6377e1c39
+      MANIFEST_SHA256: 82c6bca505348a28cfba84ba846132f63221959a19ee161bb2e77040df54f76f
+      SOURCE_TOKEN: ${{ secrets.SOURCE_ARTIFACT_READ_TOKEN }}
+      CONTROL_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Orchestrate exact protected release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          require_successful_run() {
+            local token="$1"
+            local repository="$2"
+            local run_id="$3"
+            local label="$4"
+            local json status conclusion
+            while true; do
+              json="$(curl -fsS                 -H "Authorization: Bearer $token"                 -H "Accept: application/vnd.github+json"                 "https://api.github.com/repos/$repository/actions/runs/$run_id")"
+              status="$(jq -r '.status' <<<"$json")"
+              conclusion="$(jq -r '.conclusion // ""' <<<"$json")"
+              if [[ "$status" == "completed" ]]; then
+                if [[ "$conclusion" != "success" ]]; then
+                  echo "$label failed with conclusion: $conclusion" >&2
+                  exit 1
+                fi
+                echo "$label succeeded (run $run_id)."
+                return 0
+              fi
+              sleep 10
+            done
+          }
+
+          find_new_run() {
+            local token="$1"
+            local repository="$2"
+            local workflow="$3"
+            local cutoff="$4"
+            local jq_filter="$5"
+            local run_id json
+            while true; do
+              json="$(curl -fsS                 -H "Authorization: Bearer $token"                 -H "Accept: application/vnd.github+json"                 "https://api.github.com/repos/$repository/actions/workflows/$workflow/runs?branch=main&event=workflow_dispatch&per_page=30")"
+              run_id="$(jq -r                 --arg cutoff "$cutoff"                 --arg release "$RELEASE_SHA"                 --arg control "$CONTROL_SHA"                 --arg filter "$jq_filter"                 '[.workflow_runs[]
+                  | select(.created_at >= $cutoff)
+                  | select(.event == "workflow_dispatch")
+                  | select(.run_attempt == 1)
+                  | select(
+                      ($filter == "source" and .head_sha == $release and .display_title == ("Build release " + $release))
+                      or
+                      ($filter == "attest" and .head_sha == $control and .display_title == ("Attest release " + $release))
+                      or
+                      ($filter == "request" and .head_sha == $control and .name == "Prepare automated release request")
+                    )
+                ] | sort_by(.created_at) | reverse | (.[0].id // empty)' <<<"$json")"
+              if [[ -n "$run_id" ]]; then
+                printf '%s' "$run_id"
+                return 0
+              fi
+              sleep 5
+            done
+          }
+
+          if [[ -z "$SOURCE_TOKEN" ]]; then
+            echo "Source reader credential is unavailable." >&2
+            exit 1
+          fi
+
+          ci_json="$(curl -fsS             -H "Authorization: Bearer $SOURCE_TOKEN"             -H "Accept: application/vnd.github+json"             "https://api.github.com/repos/$SOURCE_REPOSITORY/actions/runs/$CI_RUN_ID")"
+          if [[ "$(jq -r '.head_sha' <<<"$ci_json")" != "$RELEASE_SHA" ]]             || [[ "$(jq -r '.head_branch' <<<"$ci_json")" != "main" ]]             || [[ "$(jq -r '.event' <<<"$ci_json")" != "push" ]]             || [[ "$(jq -r '.name' <<<"$ci_json")" != "CI" ]]; then
+            echo "The bound source CI run does not match the release." >&2
+            exit 1
+          fi
+          require_successful_run "$SOURCE_TOKEN" "$SOURCE_REPOSITORY" "$CI_RUN_ID" "Exact-main CI"
+
+          source_main="$(curl -fsS             -H "Authorization: Bearer $SOURCE_TOKEN"             -H "Accept: application/vnd.github+json"             "https://api.github.com/repos/$SOURCE_REPOSITORY/git/ref/heads/main"             | jq -r '.object.sha')"
+          control_main="$(curl -fsS             -H "Authorization: Bearer $CONTROL_TOKEN"             -H "Accept: application/vnd.github+json"             "https://api.github.com/repos/$CONTROL_REPOSITORY/git/ref/heads/main"             | jq -r '.object.sha')"
+          [[ "$source_main" == "$RELEASE_SHA" ]] || { echo "Source main moved." >&2; exit 1; }
+          [[ "$control_main" == "$CONTROL_SHA" ]] || { echo "Control main moved." >&2; exit 1; }
+
+          build_cutoff="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          build_code="$(curl -sS -o /tmp/build-dispatch.json -w '%{http_code}'             -X POST             -H "Authorization: Bearer $SOURCE_TOKEN"             -H "Accept: application/vnd.github+json"             -H "Content-Type: application/json"             "https://api.github.com/repos/$SOURCE_REPOSITORY/actions/workflows/owner-prebuilt-build.yml/dispatches"             -d '{"ref":"main"}')"
+          [[ "$build_code" == "204" ]] || { echo "Source build dispatch failed ($build_code)." >&2; exit 1; }
+
+          build_run_id="$(find_new_run "$SOURCE_TOKEN" "$SOURCE_REPOSITORY" "owner-prebuilt-build.yml" "$build_cutoff" "source")"
+          require_successful_run "$SOURCE_TOKEN" "$SOURCE_REPOSITORY" "$build_run_id" "Immutable source build"
+
+          artifacts="$(curl -fsS             -H "Authorization: Bearer $SOURCE_TOKEN"             -H "Accept: application/vnd.github+json"             "https://api.github.com/repos/$SOURCE_REPOSITORY/actions/runs/$build_run_id/artifacts?per_page=100")"
+          artifact_id="$(jq -r             --arg name "owner-prebuilt-$RELEASE_SHA"             '[.artifacts[] | select(.name == $name and .expired == false)] | (.[0].id // empty)' <<<"$artifacts")"
+          [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || { echo "Expected immutable artifact was not found." >&2; exit 1; }
+
+          curl -fsSL             -H "Authorization: Bearer $SOURCE_TOKEN"             -H "Accept: application/vnd.github+json"             -o /tmp/source-build-logs.zip             "https://api.github.com/repos/$SOURCE_REPOSITORY/actions/runs/$build_run_id/logs"
+          artifact_sha="$(unzip -p /tmp/source-build-logs.zip             | grep -aohE '"artifactSha256":"[a-f0-9]{64}"'             | tail -n 1             | cut -d '"' -f 4)"
+          [[ "$artifact_sha" =~ ^[a-f0-9]{64}$ ]] || { echo "Artifact digest could not be recovered from the successful build." >&2; exit 1; }
+
+          attest_cutoff="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          attest_payload="$(jq -nc             --arg ref main             --arg release_sha "$RELEASE_SHA"             --arg build_run_id "$build_run_id"             --arg artifact_id "$artifact_id"             '{ref:$ref,inputs:{release_sha:$release_sha,build_run_id:$build_run_id,artifact_id:$artifact_id}}')"
+          attest_code="$(curl -sS -o /tmp/attest-dispatch.json -w '%{http_code}'             -X POST             -H "Authorization: Bearer $CONTROL_TOKEN"             -H "Accept: application/vnd.github+json"             -H "Content-Type: application/json"             "https://api.github.com/repos/$CONTROL_REPOSITORY/actions/workflows/prebuilt-builder.yml/dispatches"             -d "$attest_payload")"
+          [[ "$attest_code" == "204" ]] || { echo "Attestation dispatch failed ($attest_code)." >&2; exit 1; }
+
+          attest_run_id="$(find_new_run "$CONTROL_TOKEN" "$CONTROL_REPOSITORY" "prebuilt-builder.yml" "$attest_cutoff" "attest")"
+          require_successful_run "$CONTROL_TOKEN" "$CONTROL_REPOSITORY" "$attest_run_id" "Managed artifact attestation"
+
+          export artifact_sha
+          export NONCE="$(openssl rand -hex 32)"
+          node --input-type=module > /tmp/release-bundle.json <<'NODE'
+          const now = Date.now();
+          const bundle = {
+            version: 2,
+            mode: "AUTOMATED_MIGRATION_FREE",
+            repository: process.env.SOURCE_REPOSITORY,
+            releaseSha: process.env.RELEASE_SHA,
+            projectId: "prj_psXOHzblBOTcFjjEOUq5DygtyWQU",
+            teamId: "team_OAT9NZVgy2CjvR4xPYI1G904",
+            environment: "production",
+            baselineSha: process.env.BASELINE_SHA,
+            baselineDeploymentId: process.env.BASELINE_DEPLOYMENT_ID,
+            ledgerSha256: process.env.LEDGER_SHA256,
+            manifestSha256: process.env.MANIFEST_SHA256,
+            ciRunId: Number(process.env.CI_RUN_ID),
+            policyVersion: "automated-v1",
+            issuedAt: new Date(now).toISOString(),
+            expiresAt: new Date(now + 14 * 60 * 1000).toISOString(),
+            nonce: process.env.NONCE,
+            artifactSha256: process.env.artifact_sha
+          };
+          process.stdout.write(JSON.stringify(bundle));
+          NODE
+          bundle_sha="$(sha256sum /tmp/release-bundle.json | awk '{print $1}')"
+          [[ "$bundle_sha" =~ ^[a-f0-9]{64}$ ]] || exit 1
+
+          request_cutoff="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          request_payload="$(jq -nc             --arg mode deploy             --arg release_sha "$RELEASE_SHA"             --arg bundle_sha256 "$bundle_sha"             --rawfile bundle /tmp/release-bundle.json             --arg build_run_id "$build_run_id"             --arg artifact_id "$artifact_id"             '{ref:"main",inputs:{mode:$mode,release_sha:$release_sha,bundle_sha256:$bundle_sha256,bundle:$bundle,build_run_id:$build_run_id,artifact_id:$artifact_id}}')"
+          request_code="$(curl -sS -o /tmp/request-dispatch.json -w '%{http_code}'             -X POST             -H "Authorization: Bearer $CONTROL_TOKEN"             -H "Accept: application/vnd.github+json"             -H "Content-Type: application/json"             "https://api.github.com/repos/$CONTROL_REPOSITORY/actions/workflows/request-release.yml/dispatches"             -d "$request_payload")"
+          [[ "$request_code" == "204" ]] || { echo "Protected request dispatch failed ($request_code)." >&2; exit 1; }
+
+          request_run_id="$(find_new_run "$CONTROL_TOKEN" "$CONTROL_REPOSITORY" "request-release.yml" "$request_cutoff" "request")"
+          require_successful_run "$CONTROL_TOKEN" "$CONTROL_REPOSITORY" "$request_run_id" "Automated release request"
+
+          owner_title="Release $RELEASE_SHA / $bundle_sha"
+          while true; do
+            owner_runs="$(curl -fsS               -H "Authorization: Bearer $CONTROL_TOKEN"               -H "Accept: application/vnd.github+json"               "https://api.github.com/repos/$CONTROL_REPOSITORY/actions/workflows/owner-release.yml/runs?branch=main&event=workflow_dispatch&per_page=30")"
+            owner_run_id="$(jq -r               --arg cutoff "$request_cutoff"               --arg control "$CONTROL_SHA"               --arg title "$owner_title"               '[.workflow_runs[]
+                | select(.created_at >= $cutoff)
+                | select(.head_sha == $control)
+                | select(.event == "workflow_dispatch")
+                | select(.run_attempt == 1)
+                | select(.display_title == $title)
+              ] | sort_by(.created_at) | reverse | (.[0].id // empty)' <<<"$owner_runs")"
+            [[ -n "$owner_run_id" ]] && break
+            sleep 5
+          done
+          require_successful_run "$CONTROL_TOKEN" "$CONTROL_REPOSITORY" "$owner_run_id" "Protected production deployment"
+
+          echo "release_sha=$RELEASE_SHA"
+          echo "source_build_run_id=$build_run_id"
+          echo "artifact_id=$artifact_id"
+          echo "attestation_run_id=$attest_run_id"
+          echo "request_run_id=$request_run_id"
+          echo "owner_release_run_id=$owner_run_id"
