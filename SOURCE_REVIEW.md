@@ -83,3 +83,10 @@ Application source e41d0a931612842caa5b0ea99001d8d1d94b59d4, tree812bc0cbb1e6e75
 Required application CI37135038413 is in progress; source review is not browser acceptance. Previous e79 run37130726826 failed on one of86 cases; private storage6 and later gates passed, and exact storage cleanup verified. Ordinary inquiry206 capture passed independently, while automatically triggered shared capture37135034036 has differing obsolete native bytes and remains separately tracked.
 
 Exactly three control paths: runtimePolicy.workflowSha256, enrollment manifest actual hash/bytes, this note. All27 baseline packaged hashes/bytes verified; other26 entries/components and every other enrollment field unchanged. New control CI and source peer review required. This draft is unactivated: no active release pin, production policy, migration, deployment, credential or sellability change.
+
+
+## Prepared next160 browser enrollment (unactivated) — 2026-10-03
+
+App private source tree: 67945fe0342c78fdbcdf37ed512559c8628508ac. Reviewed required CI workflow SHA256: 706a1892ce0e09b8b6b1dee1d95e0b2fc3f07b94074b4c1e630ccb9a47856182. Preserves all original125 spec files across desktop/mobile, removes68 duplicate file/project invocations, adds trust and event-editor specs (127unique files/254pairs). Planned early160 is unrun; separate local synthetic fee4/deposit2/aid6 captures are unrun.
+
+Only runtimePolicy.workflowSha256 changes in enrollment; the distribution manifest updates its matching digest/byte length. All other26 packaged entries and policy fields remain byte equivalent. This preparation does not activate the control pin, approve a release, apply DDL, or deploy. Exact app/control CI, recovery custody and production browser proof remain required.
