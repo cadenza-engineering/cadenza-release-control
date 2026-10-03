@@ -28,7 +28,7 @@
     "productionHost": "cadenza.work",
     "environment": "production",
     "policyVersion": "automated-v1",
-    "workflowSha256": "93b2653e1a4bd0c4bcbe1505a44680837a4a18e8f9ee82fa2268f04d78abd58d",
+    "workflowSha256": "dc69c67409567b0fb52b37066ae6ad0a86a77680b9f6336ae85b7049a2e2efc0",
     "requiredChecks": [
       "Lint \u00b7 Typecheck \u00b7 Unit tests",
       "Migration drift (strict known-baseline classifier)",
