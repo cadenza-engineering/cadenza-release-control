@@ -90,3 +90,10 @@ Exactly three control paths: runtimePolicy.workflowSha256, enrollment manifest a
 App private source tree: 67945fe0342c78fdbcdf37ed512559c8628508ac. Reviewed required CI workflow SHA256: 706a1892ce0e09b8b6b1dee1d95e0b2fc3f07b94074b4c1e630ccb9a47856182. Preserves all original125 spec files across desktop/mobile, removes68 duplicate file/project invocations, adds trust and event-editor specs (127unique files/254pairs). Planned early160 is unrun; separate local synthetic fee4/deposit2/aid6 captures are unrun.
 
 Only runtimePolicy.workflowSha256 changes in enrollment; the distribution manifest updates its matching digest/byte length. All other26 packaged entries and policy fields remain byte equivalent. This preparation does not activate the control pin, approve a release, apply DDL, or deploy. Exact app/control CI, recovery custody and production browser proof remain required.
+
+
+## Prepared next178 browser enrollment (unactivated) - 2026-10-03
+
+App source prepared commit5c124c032fa8d9bce4b94f3cf09ad7cb526a0ccd, tree8a1e42cc620076c25a6104e4ad0c31b2d43fbbe8. Required CI workflow SHA25653dbfa8b169eb409c1933c1e11d646f3ae8e2dfb7e33ec2b8f6199bdad2713ca. Original127 unique specs retained plus5 explicitly enrolled files,132unique/264file-project pairs; School census123, remainder87. Early178=160prior+16newcontrol executions+2prior message retakes, all unrun. Exact e41 CI terminal failure retained; corrected failures require browser retakes.
+
+Only enrollment workflow digest, matching manifest hash, and this append-only note change. All other26 packaged entries and policy fields unchanged. This is unactivated; app/control CI, recovery, release and production browser acceptance remain required.
