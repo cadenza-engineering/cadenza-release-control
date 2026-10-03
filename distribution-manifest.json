@@ -8,8 +8,8 @@
     },
     {
       "path": "enrollment.json",
-      "sha256": "f4700cc0f8a5d44f866e8d8d187545d6edf413a10e28dcc5768bbf41a6cdc7b8",
-      "bytes": 2228
+      "sha256": "271aeb8ebba9e6e87ec24bceb5014a402ae37009231f240517cd65f768c1f865",
+      "bytes": 2229
     },
     {
       "path": "execute-release.mjs",

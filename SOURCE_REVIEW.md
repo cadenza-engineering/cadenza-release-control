@@ -34,3 +34,7 @@ V9 early storage diagnostic artifact/tee preserves native failure status; V10 ad
 Previous application80d0 run36883001357 passed migration/quality/build/health but selected browser markers364PASS/37FAIL/12SKIP; storage cleanup failed. Five later storage cases stopped at dirty-bucket preflight, so 2GiB behavior remains untested. Focused repairs require full CI/native reproof. Original inventories, provider, protected release and sale clearance remain OPEN.
 
 Exactly three paths: nested CI workflow digest, enrollment distribution hash/byte entry, this source review. All27 baseline/proposed package hash/bytes checked. Other runtime policy/requiredchecks, builder/toolchain, approver, signer, permissions, governance, dispatch identities unchanged. No activepin, merge, release, production data or credential changes.
+
+## 2026-10-03: current control main conflict reconciliation
+
+Merged control main ee4f639 (article-only CI enrollment) into this proposal. The proposed runtimePolicy.workflowSha256 remains 7918a497019c82a8fd211542201842d0930b24e0199a97136662921d3a7b53bf, verified against application candidate179fd5. Every other enrollment value and packaged component is retained from current control main. The distribution entry is regenerated from actual enrollment bytes. New control CI is required; this proposal does not merge control main, activate a pin, deploy or authorize a sale.
