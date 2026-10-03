@@ -38,3 +38,7 @@ Exactly three paths: nested CI workflow digest, enrollment distribution hash/byt
 ## 2026-10-03: current control main conflict reconciliation
 
 Merged control main ee4f639 (article-only CI enrollment) into this proposal. The proposed runtimePolicy.workflowSha256 remains 7918a497019c82a8fd211542201842d0930b24e0199a97136662921d3a7b53bf, verified against application candidate179fd5. Every other enrollment value and packaged component is retained from current control main. The distribution entry is regenerated from actual enrollment bytes. New control CI is required; this proposal does not merge control main, activate a pin, deploy or authorize a sale.
+
+## 2026-10-03: early native withdrawal repair diagnostics
+
+Proposed application workflow SHA256 8afe2fbf30a8ba4f7ed7937d9532f0a6eee35a8f17c2f087a83683d5f1a1483f adds one actual desktop/mobile keyboard repair retake after verified local health and an immediate small diagnostic artifact. All previous workflow bytes remain in order, including the full shared suite, workers, timeouts, required gates and final storage/process cleanup. pipefail and failed-step status are retained. The early two cases repeat in the full suite and do not increase unique coverage. The proposal avoids waiting for the full shared-suite log to diagnose this browser-reproduced withdrawal defect. Independent workflow review and exact candidate native execution remain pending. No control main merge, pin activation, DDL, deployment or sale clearance is performed by this draft.
