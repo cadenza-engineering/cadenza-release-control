@@ -28,14 +28,14 @@
     "productionHost": "cadenza.work",
     "environment": "production",
     "policyVersion": "automated-v1",
-    "workflowSha256": "dc69c67409567b0fb52b37066ae6ad0a86a77680b9f6336ae85b7049a2e2efc0",
+    "workflowSha256": "747f0ed8d2945c8528be6f7712cf7d5231a468143bc0b5d8769935bb5f1e7e5e",
     "requiredChecks": [
       "Lint \u00b7 Typecheck \u00b7 Unit tests",
       "Migration drift (strict known-baseline classifier)",
       "Production build \u00b7 e2e smoke (isolated DB)"
     ]
   },
-  "productionPolicySha256": "516e4216372e8cf077720e86135db812be3d930b4626964db1b0f56050825e0f",
+  "productionPolicySha256": "67bd7407bdf153dbcecbd6d1d77a93c78a10bf40d791be8c5a977e8289484031",
   "ledgerPolicy": {
     "hostname": "ep-solitary-river-au47quiq.c-10.us-east-1.aws.neon.tech",
     "database": "release_control",

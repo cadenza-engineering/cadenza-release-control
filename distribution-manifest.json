@@ -8,7 +8,7 @@
     },
     {
       "path": "enrollment.json",
-      "sha256": "815e5c5b842440f86738eb8bac4561cd4256a8b26213cff42c204ba227861f14",
+      "sha256": "4742ce84df8255fed9757e0c82166c36cbe8a4066e1b5548a5f709c34c564242",
       "bytes": 2229
     },
     {
@@ -48,7 +48,7 @@
     },
     {
       "path": "gate/control-runtime.mjs",
-      "sha256": "d51d34e2b223b6165354d87458178d8597419073d00af02dd2a7d73e223f32ca",
+      "sha256": "491222c7bd95dc5bbdd835e10567a089bfdda93cdba2d243f887b98407553097",
       "bytes": 290335
     },
     {

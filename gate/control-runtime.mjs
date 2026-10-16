@@ -5825,8 +5825,8 @@ function assessFestivalLedger(rows, repository = festivalRepositoryMigrations(),
 
 // scripts/lib/code-release-production-ledger.mjs
 var REVIEWED_CODE_RELEASE_LEDGER = Object.freeze({
-  ledgerSha256: "bda788f2b3c67667d12de05972e088175dc9ece1e382741d101973f6377e1c39",
-  successfulCount: 208,
+  ledgerSha256: "7df562705b5af527171adef804adb7b3eb7a21b486a72c3ed8b84815a69fd8f1",
+  successfulCount: 212,
   rolledBackCount: 4
 });
 function validateCodeReleaseProductionLedger(rows, repository, pin = REVIEWED_CODE_RELEASE_LEDGER) {
