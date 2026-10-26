@@ -35,7 +35,7 @@
       "Production build \u00b7 e2e smoke (isolated DB)"
     ]
   },
-  "productionPolicySha256": "67bd7407bdf153dbcecbd6d1d77a93c78a10bf40d791be8c5a977e8289484031",
+  "productionPolicySha256": "f7428d78faea772943f8d80928d9b17b6626167365c2e96bc162104ca19ff509",
   "ledgerPolicy": {
     "hostname": "ep-solitary-river-au47quiq.c-10.us-east-1.aws.neon.tech",
     "database": "release_control",

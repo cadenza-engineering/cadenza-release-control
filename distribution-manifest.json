@@ -3,12 +3,12 @@
   "files": [
     {
       "path": "README.md",
-      "sha256": "3b5753577e71a3517b817db38c7036b2cafdbf9e010429f768a44b2e2211fb26",
-      "bytes": 4979
+      "sha256": "ba99d799312cf6a3eb9cc882ff4c524bae91f4ecb72048919112c3817e97740c",
+      "bytes": 5528
     },
     {
       "path": "enrollment.json",
-      "sha256": "030ff8501182bb9abcf413a2e59ccb6ce34ee304f4385880fa458924adaa0f29",
+      "sha256": "b60396359cb86ffc806ab236ea02cfb558b711333b81589b757d755a4b108554",
       "bytes": 2229
     },
     {
@@ -48,13 +48,13 @@
     },
     {
       "path": "gate/control-runtime.mjs",
-      "sha256": "491222c7bd95dc5bbdd835e10567a089bfdda93cdba2d243f887b98407553097",
-      "bytes": 290335
+      "sha256": "85d1991c09310c9c33cd7fa62425404b2c5b25fd953c4ee4704182f2fb5455cc",
+      "bytes": 313470
     },
     {
       "path": "gate/github-approval.mjs",
-      "sha256": "995baa61d5428d2664e0562bc5d9439c2bdd1e1bcda04ab458ced7a5b4c57fa0",
-      "bytes": 8305
+      "sha256": "752b646e915d21e46c292aef642294a342912356302b8c70c44c624465d9ea98",
+      "bytes": 8664
     },
     {
       "path": "gate/artifact-provenance.mjs",
@@ -68,8 +68,8 @@
     },
     {
       "path": "gate/vercel-prebuilt.mjs",
-      "sha256": "b27ca9b83951136fc6ff362bac4fdd08db133b831303972483a31ec3a14d0ea9",
-      "bytes": 16566
+      "sha256": "51a94c882350649ab2ece10452d8e61f9c82122956b9dd7605f7687cc577281f",
+      "bytes": 16925
     },
     {
       "path": "gate/github-permissions.mjs",
@@ -88,8 +88,8 @@
     },
     {
       "path": "gate/core.mjs",
-      "sha256": "b8b93cb62d9aa4fc59cdbf269abc6a0d1916130bfd25749c7d3f66610abe61bd",
-      "bytes": 5253
+      "sha256": "0c58b3b0ac8ff3096f18e5124218ca73f03830094b704e20d777f657af77cea0",
+      "bytes": 5799
     },
     {
       "path": "gate/unpack-prebuilt.py",
@@ -135,6 +135,16 @@
       "path": "vercel-prebuilt.test.mjs",
       "bytes": 4664,
       "sha256": "8e9f09c0eff909ddcd04a55807f5215dcafdb1137a929656b8bc25ba3131f93f"
+    },
+    {
+      "path": ".github/workflows/control-scaffold.yml",
+      "sha256": "e6f288b19bab3062d8900237da6559d2dacfa2a3d1203c6011c0d1a4414fa624",
+      "bytes": 1705
+    },
+    {
+      "path": "packaged-schema-forward.test.mjs",
+      "sha256": "e9591c27a59753527e92f4be77a33d7176d68756cd640641c432c575c8b2963e",
+      "bytes": 13777
     }
   ]
 }

@@ -1192,7 +1192,7 @@ var require_utils2 = __commonJS({
       postgresMd5PasswordHash,
       randomBytes,
       deriveKey,
-      sha256: sha2562,
+      sha256: sha2563,
       hashByName,
       hmacSha256,
       md5
@@ -1217,7 +1217,7 @@ var require_utils2 = __commonJS({
       const outer = await md5(Buffer.concat([Buffer.from(inner), salt]));
       return "md5" + outer;
     }
-    async function sha2562(text) {
+    async function sha2563(text) {
       return await subtleCrypto.digest("SHA-256", text);
     }
     async function hashByName(hashName, text) {
@@ -5329,10 +5329,13 @@ var fields = ["version", "mode", "repository", "releaseSha", "projectId", "teamI
 function parseBundle(raw, policy, now) {
   requireThat(typeof raw === "string" && Buffer.byteLength(raw) <= 16384, "Invalid bundle size");
   const bundle = JSON.parse(raw);
-  const wireFields = bundle?.version === 2 ? [...fields, "artifactSha256"] : fields;
+  const schemaForward = bundle?.mode === "AUTOMATED_SCHEMA_FORWARD";
+  const wireFields = [...fields, ...bundle?.version === 2 ? ["artifactSha256"] : [], ...schemaForward ? ["schemaTransitionSha256"] : []];
   requireThat(bundle && Object.keys(bundle).sort().join(",") === [...wireFields].sort().join(","), "Unexpected bundle fields");
   requireThat(JSON.stringify(Object.fromEntries(wireFields.map((key) => [key, bundle[key]]))) === raw, "Noncanonical bundle");
-  requireThat([1, 2].includes(bundle.version) && bundle.mode === (policy.governanceModel === "AUTOMATED_OWNER_POLICY" ? "AUTOMATED_MIGRATION_FREE" : "OWNER_APPROVED_MIGRATION_FREE"), "Unsupported authorization mode");
+  const allowedModes = policy.governanceModel === "AUTOMATED_OWNER_POLICY" ? ["AUTOMATED_MIGRATION_FREE", ...policy.allowSchemaForward === true ? ["AUTOMATED_SCHEMA_FORWARD"] : []] : ["OWNER_APPROVED_MIGRATION_FREE"];
+  requireThat([1, 2].includes(bundle.version) && allowedModes.includes(bundle.mode), "Unsupported authorization mode");
+  if (schemaForward) requireThat(hex(bundle.schemaTransitionSha256, 64), "Exact schema transition digest required");
   if (bundle.version === 2) requireThat(hex(bundle.artifactSha256, 64), "Exact prebuilt artifact digest required");
   for (const key of ["repository", "projectId", "teamId", "environment", "policyVersion"]) {
     requireThat(bundle[key] === policy[key], `Wrong ${key}`);
@@ -5359,6 +5362,7 @@ function assertReleaseTechnicalChecks(bundle, evidence, policy, now) {
   requireThat(Array.isArray(evidence.checks) && policy.requiredChecks.every((name) => evidence.checks.filter((check) => check.name === name).length === 1 && evidence.checks.find((check) => check.name === name).conclusion === "success"), "Required tests must pass");
   requireThat(evidence.pendingMigrations === 0 && evidence.failedMigrations === 0 && evidence.schemaMatches === true && evidence.runtimePermissionsValid === true, "Migration/runtime integrity failed");
   requireThat(evidence.health === "healthy" && evidence.recoveryEvidenceValid === true, "Health or recovery evidence failed");
+  if (bundle.mode === "AUTOMATED_SCHEMA_FORWARD") requireThat(evidence.schemaTransitionSha256 === bundle.schemaTransitionSha256, "Evidence is not bound to the bundle schema transition");
 }
 
 // infrastructure/release-custody/owner-gate/github-approval.mjs
@@ -5528,6 +5532,7 @@ function createGithubMigrationReader({ repository, readJson }) {
     requireThat5(directories.size > 0 && directories.size === files.size && [...directories].every((name) => files.has(name)), "Incomplete migration directory inventory");
     const pending = [...files.entries()].sort(([a], [b]) => a.localeCompare(b));
     const result = new Array(pending.length);
+    const sqlByName = /* @__PURE__ */ new Map();
     let cursor = 0;
     await Promise.all(Array.from({ length: Math.min(8, pending.length) }, async () => {
       while (cursor < pending.length) {
@@ -5539,9 +5544,12 @@ function createGithubMigrationReader({ repository, readJson }) {
         const gitSha = createHash3("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");
         requireThat5(gitSha === entry.sha, "Migration bytes differ from committed Git blob");
         result[index] = { name, sha256: createHash3("sha256").update(bytes).digest("hex") };
+        const sql = bytes.toString("utf8");
+        requireThat5(Buffer.from(sql, "utf8").equals(bytes), "Migration SQL is not exact UTF-8");
+        sqlByName.set(name, sql);
       }
     }));
-    return { releaseSha, entries: result };
+    return { releaseSha, entries: result, sqlByName };
   };
 }
 
@@ -5829,6 +5837,12 @@ var REVIEWED_CODE_RELEASE_LEDGER = Object.freeze({
   successfulCount: 212,
   rolledBackCount: 4
 });
+function validateReviewedCodeReleaseLedgerPin(pin) {
+  if (!pin || Array.isArray(pin) || Object.keys(pin).sort().join(",") !== "ledgerSha256,rolledBackCount,successfulCount" || typeof pin.ledgerSha256 !== "string" || !/^[a-f0-9]{64}$/.test(pin.ledgerSha256) || !["successfulCount", "rolledBackCount"].every((key) => Number.isSafeInteger(pin[key]) && pin[key] >= 0)) {
+    throw new Error("Exact protected production ledger pin required");
+  }
+  return Object.freeze({ ...pin });
+}
 function validateCodeReleaseProductionLedger(rows, repository, pin = REVIEWED_CODE_RELEASE_LEDGER) {
   const actual = assessFestivalLedger(rows, repository, "after");
   for (const key of ["ledgerSha256", "successfulCount", "rolledBackCount"]) {
@@ -6094,7 +6108,7 @@ function productionReaderConfig(rawUrl, policy) {
   requireThat7(policy.readerRole === "cadenza_census_ro" && /^[a-z0-9.-]+\.neon\.tech$/.test(policy.hostname) && url.password.length > 0, "Dedicated production census credential required");
   return { host: policy.hostname, port: 5432, database: policy.database, user: policy.readerRole, password: decodeURIComponent(url.password), ssl: { rejectUnauthorized: true }, options: "-c default_transaction_read_only=on", statement_timeout: 1e4, query_timeout: 15e3, connectionTimeoutMillis: 1e4, application_name: "cadenza-owner-release-observer" };
 }
-function createDatabaseEvidenceReader({ policy: sourcePolicy, readConnection, readCandidateMigrations, clientFactory = (config) => new esm_default.Client(config) }) {
+function createDatabaseEvidenceReader({ policy: sourcePolicy, readConnection, readCandidateMigrations, ledgerPin = REVIEWED_CODE_RELEASE_LEDGER, clientFactory = (config) => new esm_default.Client(config) }) {
   const policy = structuredClone(sourcePolicy);
   return async (bundle) => {
     const candidate = await readCandidateMigrations(bundle.releaseSha);
@@ -6104,7 +6118,7 @@ function createDatabaseEvidenceReader({ policy: sourcePolicy, readConnection, re
       return { name: entry.name, sha256: entry.sha256 };
     }).sort((a, b) => a.name.localeCompare(b.name));
     const manifestSha256 = createHash7("sha256").update(JSON.stringify(entries.map((entry) => [entry.name, entry.sha256]))).digest("hex");
-    requireThat7(manifestSha256 === bundle.manifestSha256 && bundle.ledgerSha256 === REVIEWED_CODE_RELEASE_LEDGER.ledgerSha256, "Release migration digests differ from reviewed state");
+    requireThat7(manifestSha256 === bundle.manifestSha256 && bundle.ledgerSha256 === ledgerPin.ledgerSha256, "Release migration digests differ from reviewed state");
     const client = clientFactory(productionReaderConfig(await readConnection(), policy));
     try {
       await client.connect();
@@ -6113,7 +6127,7 @@ function createDatabaseEvidenceReader({ policy: sourcePolicy, readConnection, re
       const row = identity.rows[0];
       requireThat7(identity.rows.length === 1 && row.database === policy.database && row.role === policy.readerRole && row.default_read_only === "on" && row.transaction_read_only === "on" && row.isolation === "repeatable read", "Consistent read-only production identity required");
       const ledger = await client.query(FESTIVAL_LEDGER_SQL);
-      validateCodeReleaseProductionLedger(ledger.rows, entries);
+      validateCodeReleaseProductionLedger(ledger.rows, entries, ledgerPin);
       let queue = Promise.resolve();
       const adapter = { $queryRawUnsafe: (sql, ...params) => {
         const result = queue.then(() => client.query(sql, params)).then((value) => value.rows);
@@ -6232,6 +6246,331 @@ function createMigrationFreeObserver({ github, database, schema, vercel, readCan
         recovery: { kind: "APPLICATION_ROLLBACK_IDENTICAL_MODEL_NO_MIGRATIONS", baselineDeploymentId: bundle.baselineDeploymentId, baselineSha: bundle.baselineSha, baselineUrl: after.baselineUrl, schemaSha256: rollbackSchemas.schemaSha256, confidentialSchemaSha256: rollbackSchemas.confidentialSchemaSha256, databaseRestoreVerified: false }
       };
     }
+  };
+}
+
+// infrastructure/release-custody/owner-gate/schema-forward.mjs
+var requireThat10 = (value, message) => {
+  if (!value) throw new Error(message);
+};
+var sha2562 = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+var SCHEMA_FORWARD_MODE = "AUTOMATED_SCHEMA_FORWARD";
+var ADDITIVE_CLASSIFICATION = "ADDITIVE_BASELINE_COMPATIBLE";
+var IDENT = "[A-Za-z_][A-Za-z0-9_]*";
+var byCodeUnit = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort(byCodeUnit).map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+var exactKeys2 = (value, keys, label) => {
+  requireThat10(value && typeof value === "object" && !Array.isArray(value) && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort()), `${label} keys differ from the transition contract`);
+};
+function readSchemaTransition(transition) {
+  exactKeys2(transition, ["version", "classification", "from", "to", "migrations", "widenings", "ledger", "runtimeManifest", "classifierEvidenceSha256"], "schemaTransition");
+  requireThat10(transition.version === 1 && transition.classification === ADDITIVE_CLASSIFICATION, "Only an additive, baseline-compatible transition is supported");
+  exactKeys2(transition.from, ["schemaSha256", "confidentialSchemaSha256"], "schemaTransition.from");
+  requireThat10(sha2562(transition.from.schemaSha256) && sha2562(transition.from.confidentialSchemaSha256), "Exact baseline schema digests required");
+  exactKeys2(transition.to, ["classification", "schemaSha256", "confidentialSchemaSha256", "catalogDdlSha256", "classifierSha256", "counts"], "schemaTransition.to");
+  requireThat10(transition.to.classification === "EXACT_REVIEWED_BASELINE" && [transition.to.schemaSha256, transition.to.confidentialSchemaSha256, transition.to.catalogDdlSha256, transition.to.classifierSha256].every(sha2562) && transition.to.counts && typeof transition.to.counts === "object" && !Array.isArray(transition.to.counts) && Object.keys(transition.to.counts).length > 0 && Object.values(transition.to.counts).every(Number.isSafeInteger), "Exact reviewed target schema proof with catalog counts required");
+  requireThat10(transition.to.schemaSha256 !== transition.from.schemaSha256, "A transition must change the main schema");
+  requireThat10(transition.to.confidentialSchemaSha256 === transition.from.confidentialSchemaSha256, "The confidential schema must not change in a schema-forward transition");
+  requireThat10(Array.isArray(transition.migrations) && transition.migrations.length > 0, "Transition migrations required");
+  let previous = "";
+  for (const entry of transition.migrations) {
+    exactKeys2(entry, ["name", "sha256"], "transition migration");
+    requireThat10(/^[0-9A-Za-z_-]+$/.test(entry.name) && sha2562(entry.sha256) && entry.name > previous, "Transition migrations must be unique, sorted by code unit and exact");
+    previous = entry.name;
+  }
+  requireThat10(Array.isArray(transition.widenings), "Reviewed widenings list required (may be empty)");
+  for (const widening of transition.widenings) {
+    exactKeys2(widening, ["table", "column", "fromType"], "reviewed widening");
+    requireThat10(new RegExp(`^${IDENT}$`).test(widening.table) && new RegExp(`^${IDENT}$`).test(widening.column) && ["SMALLINT", "INTEGER"].includes(widening.fromType), "A widening must name an INTEGER or SMALLINT source column");
+  }
+  exactKeys2(transition.ledger, ["ledgerSha256", "successfulCount", "rolledBackCount"], "schemaTransition.ledger");
+  requireThat10(sha2562(transition.ledger.ledgerSha256) && Number.isSafeInteger(transition.ledger.successfulCount) && Number.isSafeInteger(transition.ledger.rolledBackCount), "Exact post-transition ledger pin required");
+  requireThat10(transition.runtimeManifest && typeof transition.runtimeManifest === "object" && !Array.isArray(transition.runtimeManifest), "Post-transition runtime manifest required");
+  requireThat10(sha2562(transition.classifierEvidenceSha256), "Additive-classifier evidence digest required");
+  return { transition: structuredClone(transition), transitionSha256: digest(canonicalJson(transition)) };
+}
+function splitSqlStatements(sql) {
+  requireThat10(typeof sql === "string", "SQL text required");
+  const statements = [];
+  let current = "";
+  const n = sql.length;
+  const push = () => {
+    const text = current.replace(/\s+/g, " ").trim();
+    if (text) statements.push(text);
+    current = "";
+  };
+  for (let i = 0; i < n; ) {
+    const ch = sql[i], next = sql[i + 1];
+    if (ch === "-" && next === "-") {
+      const end = sql.indexOf("\n", i);
+      i = end === -1 ? n : end;
+      current += " ";
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      let depth = 0, j = i;
+      while (j < n) {
+        if (sql[j] === "/" && sql[j + 1] === "*") {
+          depth++;
+          j += 2;
+          continue;
+        }
+        if (sql[j] === "*" && sql[j + 1] === "/") {
+          depth--;
+          j += 2;
+          if (depth === 0) break;
+          continue;
+        }
+        j++;
+      }
+      requireThat10(depth === 0, "Unterminated block comment");
+      i = j;
+      current += " ";
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      if (ch === "'") requireThat10(!/[A-Za-z&]$/.test(current), "Prefixed string literals are not allowed");
+      let j = i + 1;
+      for (; ; ) {
+        requireThat10(j < n, "Unterminated quoted text");
+        if (sql[j] === ch) {
+          if (sql[j + 1] === ch) {
+            j += 2;
+            continue;
+          }
+          break;
+        }
+        j++;
+      }
+      current += sql.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    if (ch === "$") {
+      const open2 = sql.slice(i).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/);
+      if (open2) {
+        const end = sql.indexOf(open2[0], i + open2[0].length);
+        requireThat10(end !== -1, "Unterminated dollar-quoted body");
+        current += sql.slice(i, end + open2[0].length);
+        i = end + open2[0].length;
+        continue;
+      }
+      requireThat10(false, "Unexpected $ outside a dollar-quoted body");
+    }
+    if (ch === ";") {
+      push();
+      i++;
+      continue;
+    }
+    current += ch;
+    i++;
+  }
+  push();
+  return statements;
+}
+function withoutQuotedText(text) {
+  return text.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"/g, " ");
+}
+var CONSTANT = "(?:'(?:[^';$]|'')*'(?:::(?:jsonb|text))?|-?\\d+(?:\\.\\d+)?|true|false)";
+var PLAIN_TYPE = "(?:TEXT|INTEGER|BIGINT|BOOLEAN|DOUBLE PRECISION|JSONB|TIMESTAMP\\(3\\)|VARCHAR\\(\\d+\\)|DECIMAL\\(\\d+,\\d+\\))";
+var ENUM_TYPE = '"[A-Z][A-Za-z0-9_]*"(?:\\[\\])?';
+var ADD_COLUMN = new RegExp(`^ALTER TABLE "(${IDENT})" ADD COLUMN "(${IDENT})" (${PLAIN_TYPE}|${ENUM_TYPE})(?: NOT NULL DEFAULT ${CONSTANT}| DEFAULT ${CONSTANT})?$`);
+var ADD_COLUMNS = new RegExp(`^ALTER TABLE "(${IDENT})" ((?:ADD COLUMN "${IDENT}" ${PLAIN_TYPE}, )*ADD COLUMN "${IDENT}" ${PLAIN_TYPE})$`);
+var SET_DEFAULT = new RegExp(`^ALTER TABLE "(${IDENT})" ALTER COLUMN "(${IDENT})" SET DEFAULT ${CONSTANT}$`);
+var WIDEN = new RegExp(`^ALTER TABLE "(${IDENT})" ALTER COLUMN "(${IDENT})" (?:SET DATA )?TYPE BIGINT$`);
+var CREATE_FUNCTION = new RegExp(`^CREATE FUNCTION ("${IDENT}"|${IDENT})\\(\\) RETURNS trigger (?:LANGUAGE plpgsql )?AS (\\$(?:${IDENT})?\\$)([\\s\\S]*)\\2(?: LANGUAGE plpgsql)?$`);
+var CREATE_TRIGGER = new RegExp(`^CREATE TRIGGER (?:"${IDENT}"|${IDENT}) BEFORE (?:INSERT|UPDATE)(?: OR (?:INSERT|UPDATE))*(?: OF "${IDENT}"(?:, "${IDENT}")*)? ON "(${IDENT})" FOR EACH ROW EXECUTE (?:FUNCTION|PROCEDURE) ("${IDENT}"|${IDENT})\\((?:'[A-Za-z0-9_]*'(?:, ?'[A-Za-z0-9_]*')*)?\\)$`);
+var COMMENT = new RegExp(`^COMMENT ON (?:TABLE "${IDENT}"|COLUMN "${IDENT}"\\."${IDENT}") IS '[^';$]*'$`);
+var functionIdentity = (name) => name.startsWith('"') ? name.slice(1, -1) : name.toLowerCase();
+var FORBIDDEN_WORDS = /\b(?:RAISE|RETURN|CALL|LOCK|REFRESH|SET|SELECT|PERFORM|EXECUTE|INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|GRANT|REVOKE|COPY|CREATE|DO|NOTIFY|LISTEN|COMMIT|ROLLBACK|INTO|LOOP|WHILE|FOR|FOREACH|EXCEPTION|nextval|setval|currval|dblink\w*|pg_\w+|lo_\w+|txid_\w+)\b/i;
+var SAFE_TRIGGER_FUNCTIONS = /* @__PURE__ */ new Set([
+  "jsonb_set",
+  "jsonb_build_object",
+  "jsonb_build_array",
+  "jsonb_strip_nulls",
+  "jsonb_typeof",
+  "jsonb_array_length",
+  "to_jsonb",
+  "coalesce",
+  "nullif",
+  "greatest",
+  "least",
+  "lower",
+  "upper",
+  "btrim",
+  "length"
+]);
+var PAREN_KEYWORDS = /* @__PURE__ */ new Set(["and", "or", "not", "in", "from", "then", "else", "when", "is", "distinct"]);
+var CALL_IDENTIFIER = '(?:[A-Za-z_\\u0080-\\uFFFF][A-Za-z0-9_$\\u0080-\\uFFFF]*|"(?:[^"]|"")*")';
+var TRIGGER_CALL = new RegExp(`(${CALL_IDENTIFIER}(?:\\s*\\.\\s*${CALL_IDENTIFIER})*)\\s*\\(`, "g");
+var TRIGGER_CAST = new RegExp(`::\\s*(${CALL_IDENTIFIER}(?:\\s*\\.\\s*${CALL_IDENTIFIER})*)(\\s*[\\[(])?`, "g");
+var SAFE_TRIGGER_CASTS = /* @__PURE__ */ new Set(["jsonb", "text"]);
+var SAFE_TRIGGER_OPERATORS = /* @__PURE__ */ new Set(["#>", "=", "<>", "!=", "<", ">", "<=", ">="]);
+function assertSafeTriggerExpression(part) {
+  const code = withoutQuotedText(part);
+  requireThat10(!FORBIDDEN_WORDS.test(code), `Trigger expression uses a forbidden operation: ${part.slice(0, 80)}`);
+  for (const operator of code.matchAll(/[+\-*/<>=~!@#%^&|`?]+/g)) {
+    requireThat10(SAFE_TRIGGER_OPERATORS.has(operator[0]), `Trigger expression uses an operator outside the allow-list: ${operator[0]}`);
+  }
+  const calls = part.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"/g, (token) => token.startsWith("'") ? "''" : token);
+  for (const cast of calls.matchAll(TRIGGER_CAST)) {
+    requireThat10(SAFE_TRIGGER_CASTS.has(cast[1].toLowerCase()) && !cast[2], `Trigger expression casts to a type outside the allow-list: ${cast[1]}`);
+  }
+  for (const call of calls.matchAll(TRIGGER_CALL)) {
+    const identifiers = [...call[1].matchAll(new RegExp(CALL_IDENTIFIER, "g"))].map((match) => match[0]);
+    const quoted = identifiers[0].startsWith('"');
+    const name = quoted ? identifiers[0].slice(1, -1).replaceAll('""', '"') : identifiers[0].toLowerCase();
+    if (identifiers.length === 1 && !quoted && PAREN_KEYWORDS.has(name)) continue;
+    requireThat10(identifiers.length === 1 && !quoted && SAFE_TRIGGER_FUNCTIONS.has(name), `Trigger expression calls a function outside the allow-list: ${call[1]}`);
+  }
+}
+function assertTriggerBody(body, addedColumns) {
+  const text = body.replace(/\s+/g, " ").trim();
+  const shape = text.match(new RegExp(`^(?:DECLARE((?: ${IDENT} (?:text|integer|bigint|boolean|jsonb) := TG_ARGV\\[\\d+\\];)+) )?BEGIN (.*) RETURN NEW; END;?$`, "i"));
+  requireThat10(shape, "Trigger function body must be DECLARE (TG_ARGV copies only) BEGIN ... RETURN NEW; END");
+  const statements = splitSqlStatements(shape[2]);
+  requireThat10(statements.length > 0, "Trigger function body has no assignments");
+  const assignedColumns = /* @__PURE__ */ new Set();
+  for (const statement of statements) {
+    if (/^END IF$/i.test(statement)) continue;
+    const assign = statement.match(new RegExp(`^(?:IF (.+) THEN )?NEW\\."(${IDENT})" := (.+)$`, "i"));
+    requireThat10(assign, `Trigger statement is not an allowed assignment: ${statement.slice(0, 80)}`);
+    requireThat10(addedColumns.has(assign[2]), `Trigger may only assign a column added in the same migration: ${assign[2]}`);
+    assignedColumns.add(assign[2]);
+    for (const part of [assign[1] ?? "", assign[3]]) assertSafeTriggerExpression(part);
+  }
+  return assignedColumns;
+}
+function classifyAdditiveMigrationSql(sql, { widenings = [] } = {}) {
+  requireThat10(typeof sql === "string" && sql.trim().length > 0, "Migration SQL required");
+  const statements = splitSqlStatements(sql);
+  requireThat10(statements.length > 0, "Migration has no statements");
+  const allowedWidenings = new Set(widenings.map((w) => `${w.table}.${w.column}`));
+  const addedColumns = /* @__PURE__ */ new Set(), addedColumnsByTable = /* @__PURE__ */ new Map(), functions = /* @__PURE__ */ new Map();
+  const addColumn = (table, column) => {
+    addedColumns.add(column);
+    if (!addedColumnsByTable.has(table)) addedColumnsByTable.set(table, /* @__PURE__ */ new Set());
+    addedColumnsByTable.get(table).add(column);
+  };
+  for (const statement of statements) {
+    let match;
+    if (match = statement.match(ADD_COLUMN)) {
+      requireThat10(!/serial/i.test(match[3]), "Serial column types are not additive");
+      addColumn(match[1], match[2]);
+    } else if (match = statement.match(ADD_COLUMNS)) {
+      for (const column of match[2].matchAll(/ADD COLUMN "([A-Za-z_][A-Za-z0-9_]*)"/g)) addColumn(match[1], column[1]);
+    } else if (match = statement.match(SET_DEFAULT)) {
+      requireThat10(addedColumnsByTable.get(match[1])?.has(match[2]), "SET DEFAULT is allowed only on a column added earlier on the same table in the same migration");
+    } else if (match = statement.match(WIDEN)) {
+      requireThat10(allowedWidenings.has(`${match[1]}.${match[2]}`), `BIGINT widening of ${match[1]}.${match[2]} is not a reviewed INTEGER widening`);
+    } else if (match = statement.match(CREATE_FUNCTION)) {
+      functions.set(functionIdentity(match[1]), assertTriggerBody(match[3], addedColumns));
+    } else if (match = statement.match(CREATE_TRIGGER)) {
+      const functionName = functionIdentity(match[2]);
+      requireThat10(functions.has(functionName), "A trigger may only use a function created earlier in the same migration");
+      for (const column of functions.get(functionName)) {
+        requireThat10(addedColumnsByTable.get(match[1])?.has(column), `Trigger on ${match[1]} may only assign a column added to that table in the same migration: ${column}`);
+      }
+    } else {
+      requireThat10(COMMENT.test(statement), `Not an additive statement: ${statement.slice(0, 120)}`);
+    }
+  }
+  return { classification: ADDITIVE_CLASSIFICATION, statements: statements.length };
+}
+function additiveClassifierEvidence(migrations, widenings = []) {
+  const rows = migrations.map(({ name, sha256: sum, sql }) => ({ name, sha256: sum, statements: classifyAdditiveMigrationSql(sql, { widenings }).statements }));
+  return digest(canonicalJson({ classification: ADDITIVE_CLASSIFICATION, widenings, migrations: rows }));
+}
+function inventory(result, sha, label) {
+  requireThat10(result?.releaseSha === sha && Array.isArray(result.entries) && result.sqlByName instanceof Map, `Exact verified migration inventory required for the ${label}`);
+  return new Map(result.entries.map((entry) => [entry.name, entry.sha256]));
+}
+function createSchemaForwardObserver({ github, database, schema, vercel, readCandidateSchemas, readCandidateMigrations, schemaTransition, now = Date.now }) {
+  const { transition, transitionSha256 } = readSchemaTransition(schemaTransition);
+  return {
+    async collect(bundle) {
+      requireThat10(bundle.mode === SCHEMA_FORWARD_MODE, "Schema-forward mode required");
+      requireThat10(bundle.schemaTransitionSha256 === transitionSha256, "Bundle is not bound to the reviewed schema transition");
+      requireThat10(bundle.ledgerSha256 === transition.ledger.ledgerSha256, "Bundle ledger differs from the transition pin");
+      const observedAt = now();
+      const [candidateMigrations, baselineMigrations] = await Promise.all([readCandidateMigrations(bundle.releaseSha), readCandidateMigrations(bundle.baselineSha)]);
+      const [ci, ledger, shape, before, rollbackSchemas] = await Promise.all([
+        github(bundle),
+        database(bundle),
+        schema(bundle),
+        vercel.baseline(bundle),
+        readCandidateSchemas(bundle.baselineSha)
+      ]);
+      requireThat10(ci.releaseSha === bundle.releaseSha && ci.ciRunId === bundle.ciRunId, "CI source mismatch");
+      requireThat10(ledger.ledgerSha256 === bundle.ledgerSha256 && ledger.manifestSha256 === bundle.manifestSha256 && ledger.pendingMigrations === 0 && ledger.failedMigrations === 0 && ledger.runtimePermissionsValid === true, "Post-transition database proof required");
+      requireThat10(shape.releaseSha === bundle.releaseSha && shape.schemaMatches === true && shape.schemaSha256 === transition.to.schemaSha256 && shape.confidentialSchemaSha256 === transition.to.confidentialSchemaSha256, "Candidate schema is not the reviewed transition target");
+      requireThat10(rollbackSchemas.releaseSha === bundle.baselineSha && rollbackSchemas.schemaSha256 === transition.from.schemaSha256 && rollbackSchemas.confidentialSchemaSha256 === transition.from.confidentialSchemaSha256, "Rollback baseline is not the reviewed transition source");
+      const after = inventory(candidateMigrations, bundle.releaseSha, "candidate");
+      const prior = inventory(baselineMigrations, bundle.baselineSha, "baseline");
+      for (const [name, sum] of prior) requireThat10(after.get(name) === sum, "A baseline migration was removed or changed");
+      const difference = [...after].filter(([name]) => !prior.has(name)).map(([name, sum]) => [name, sum]).sort(([a], [b]) => byCodeUnit(a, b));
+      requireThat10(canonicalJson(difference) === canonicalJson(transition.migrations.map((entry) => [entry.name, entry.sha256])), "Baseline and candidate differ by other than the reviewed migrations");
+      const evidence = additiveClassifierEvidence(transition.migrations.map((entry) => ({ ...entry, sql: candidateMigrations.sqlByName.get(entry.name) })), transition.widenings);
+      requireThat10(evidence === transition.classifierEvidenceSha256, "Gate-side additive classification differs from the reviewed evidence");
+      const afterBaseline = await vercel.baseline(bundle);
+      for (const value of [before, afterBaseline]) {
+        requireThat10(value.baselineDeploymentId === bundle.baselineDeploymentId && value.baselineSha === bundle.baselineSha && value.projectId === bundle.projectId && value.teamId === bundle.teamId && value.environment === "production" && value.health === "healthy", "Healthy exact rollback deployment required");
+      }
+      requireThat10(before.baselineUrl === afterBaseline.baselineUrl && typeof afterBaseline.baselineUrl === "string" && afterBaseline.baselineUrl.length > 0, "Rollback target changed while observing");
+      requireThat10(now() >= observedAt && now() - observedAt <= 3e4, "Technical collection exceeded freshness window");
+      return {
+        observedAt,
+        releaseSha: bundle.releaseSha,
+        projectId: bundle.projectId,
+        teamId: bundle.teamId,
+        environment: "production",
+        baselineDeploymentId: bundle.baselineDeploymentId,
+        baselineSha: bundle.baselineSha,
+        ledgerSha256: ledger.ledgerSha256,
+        manifestSha256: ledger.manifestSha256,
+        ciRunId: ci.ciRunId,
+        mainSha: ci.mainSha,
+        ciConclusion: ci.ciConclusion,
+        ciEvent: ci.ciEvent,
+        ciBranch: ci.ciBranch,
+        workflowSha256: ci.workflowSha256,
+        checks: ci.checks,
+        pendingMigrations: 0,
+        failedMigrations: 0,
+        runtimePermissionsValid: true,
+        schemaMatches: true,
+        health: "healthy",
+        recoveryEvidenceValid: true,
+        schemaProof: shape,
+        schemaTransitionSha256: transitionSha256,
+        recovery: {
+          kind: "APPLICATION_ROLLBACK_ADDITIVE_SCHEMA_TRANSITION",
+          baselineDeploymentId: bundle.baselineDeploymentId,
+          baselineSha: bundle.baselineSha,
+          baselineUrl: afterBaseline.baselineUrl,
+          schemaSha256: rollbackSchemas.schemaSha256,
+          confidentialSchemaSha256: rollbackSchemas.confidentialSchemaSha256,
+          transitionMigrations: transition.migrations.map((entry) => entry.name),
+          databaseRestoreVerified: false
+        }
+      };
+    }
+  };
+}
+function memoizeBySha(read) {
+  const cache = /* @__PURE__ */ new Map();
+  return (sha) => {
+    if (!cache.has(sha)) cache.set(sha, Promise.resolve(read(sha)).catch((error) => {
+      cache.delete(sha);
+      throw error;
+    }));
+    return cache.get(sha);
   };
 }
 
@@ -6421,30 +6760,30 @@ function verifyProductionRollback(input) {
 }
 
 // infrastructure/release-custody/owner-gate/vercel-evidence.mjs
-var requireThat10 = (value, message) => {
+var requireThat11 = (value, message) => {
   if (!value) throw new Error(message);
 };
 function createVercelEvidenceReader({ projectId, teamId, productionHost, readToken, fetchImpl = fetch, now = Date.now, wait = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms)), completionTimeoutMs = 45 * 6e4, pollIntervalMs = 15e3 }) {
-  requireThat10(/^prj_[a-zA-Z0-9]+$/.test(projectId) && /^team_[a-zA-Z0-9]+$/.test(teamId), "Pinned Vercel target required");
-  requireThat10(/^[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}$/.test(productionHost), "Pinned production hostname required");
-  requireThat10(Number.isInteger(completionTimeoutMs) && completionTimeoutMs > 0 && completionTimeoutMs <= 45 * 6e4 && Number.isInteger(pollIntervalMs) && pollIntervalMs > 0 && pollIntervalMs <= 6e4, "Bounded provider observation required");
+  requireThat11(/^prj_[a-zA-Z0-9]+$/.test(projectId) && /^team_[a-zA-Z0-9]+$/.test(teamId), "Pinned Vercel target required");
+  requireThat11(/^[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}$/.test(productionHost), "Pinned production hostname required");
+  requireThat11(Number.isInteger(completionTimeoutMs) && completionTimeoutMs > 0 && completionTimeoutMs <= 45 * 6e4 && Number.isInteger(pollIntervalMs) && pollIntervalMs > 0 && pollIntervalMs <= 6e4, "Bounded provider observation required");
   async function deployment(id) {
-    requireThat10(id === productionHost || /^dpl_[a-zA-Z0-9]+$/.test(id), "Invalid deployment lookup");
+    requireThat11(id === productionHost || /^dpl_[a-zA-Z0-9]+$/.test(id), "Invalid deployment lookup");
     const token = await readToken();
-    requireThat10(typeof token === "string" && token.length > 0, "Vercel reader credential unavailable");
+    requireThat11(typeof token === "string" && token.length > 0, "Vercel reader credential unavailable");
     const result = await fetchImpl(`https://api.vercel.com/v13/deployments/${encodeURIComponent(id)}?teamId=${encodeURIComponent(teamId)}`, { method: "GET", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(3e4), headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
-    requireThat10(result.ok, "Vercel deployment lookup failed");
+    requireThat11(result.ok, "Vercel deployment lookup failed");
     return parseTrustedVercelApiJson(await result.text());
   }
   async function health() {
     const result = await fetchImpl(`https://${productionHost}/api/health`, { method: "GET", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(1e4), headers: { accept: "application/json" } });
-    requireThat10(result.status === 200, "Production health failed");
+    requireThat11(result.status === 200, "Production health failed");
     const body = await result.json(), timestamp = Date.parse(body.time);
-    requireThat10(body.ok === true && body.status === "ok" && body.services?.database === "ok" && Number.isFinite(timestamp) && timestamp <= now() + 5e3 && now() - timestamp < 3e4, "Fresh database health required");
+    requireThat11(body.ok === true && body.status === "ok" && body.services?.database === "ok" && Number.isFinite(timestamp) && timestamp <= now() + 5e3 && now() - timestamp < 3e4, "Fresh database health required");
     return "healthy";
   }
   function target(bundle) {
-    requireThat10(bundle.projectId === projectId && bundle.teamId === teamId && bundle.environment === "production", "Wrong production target");
+    requireThat11(bundle.projectId === projectId && bundle.teamId === teamId && bundle.environment === "production", "Wrong production target");
   }
   return {
     async baseline(bundle) {
@@ -6457,26 +6796,26 @@ function createVercelEvidenceReader({ projectId, teamId, productionHost, readTok
     },
     async verifyNew(bundle, deploymentId2, previousDeploymentUrl) {
       target(bundle);
-      requireThat10(deploymentId2 !== bundle.baselineDeploymentId, "Expected a new immutable deployment");
+      requireThat11(deploymentId2 !== bundle.baselineDeploymentId, "Expected a new immutable deployment");
       const deadline = now() + completionTimeoutMs;
       let verified;
       for (let attempt = 0; ; attempt++) {
         const direct = await deployment(deploymentId2);
-        requireThat10((direct.id ?? direct.uid) === deploymentId2 && direct.projectId === projectId && (direct.teamId ?? direct.team?.id) === teamId && (direct.teamId === void 0 || direct.team?.id === void 0 || direct.teamId === direct.team.id) && direct.target === "production", "Pending deployment target mismatch");
-        requireThat10((direct.gitSource?.sha ?? direct.meta?.githubCommitSha) === bundle.releaseSha && (direct.gitSource?.sha === void 0 || direct.meta?.githubCommitSha === void 0 || direct.gitSource.sha === direct.meta.githubCommitSha), "Pending deployment source mismatch");
-        if (bundle.version === 2) requireThat10(direct.meta?.cadenzaArtifactSha256 === bundle.artifactSha256, "Production artifact digest mismatch");
-        requireThat10(["QUEUED", "INITIALIZING", "BUILDING", "READY"].includes(direct.readyState), "Provider deployment failed or has an unknown state");
+        requireThat11((direct.id ?? direct.uid) === deploymentId2 && direct.projectId === projectId && (direct.teamId ?? direct.team?.id) === teamId && (direct.teamId === void 0 || direct.team?.id === void 0 || direct.teamId === direct.team.id) && direct.target === "production", "Pending deployment target mismatch");
+        requireThat11((direct.gitSource?.sha ?? direct.meta?.githubCommitSha) === bundle.releaseSha && (direct.gitSource?.sha === void 0 || direct.meta?.githubCommitSha === void 0 || direct.gitSource.sha === direct.meta.githubCommitSha), "Pending deployment source mismatch");
+        if (bundle.version === 2) requireThat11(direct.meta?.cadenzaArtifactSha256 === bundle.artifactSha256, "Production artifact digest mismatch");
+        requireThat11(["QUEUED", "INITIALIZING", "BUILDING", "READY"].includes(direct.readyState), "Provider deployment failed or has an unknown state");
         if (direct.readyState === "READY") {
           const alias = await deployment(productionHost);
           if ((alias.id ?? alias.uid) === deploymentId2) {
             verified = verifyNewProductionDeployment({ deployment: direct, aliasDeployment: alias, expectedDeploymentId: deploymentId2, expectedDeploymentUrl: direct.url, expectedProjectId: projectId, expectedTeamId: teamId, expectedReleaseSha: bundle.releaseSha, previousDeploymentId: bundle.baselineDeploymentId, previousDeploymentUrl });
-            if (bundle.version === 2) requireThat10(alias.meta?.cadenzaArtifactSha256 === bundle.artifactSha256, "Production alias artifact digest mismatch");
+            if (bundle.version === 2) requireThat11(alias.meta?.cadenzaArtifactSha256 === bundle.artifactSha256, "Production alias artifact digest mismatch");
             await health();
             break;
           }
           verifyProductionRollback({ deployment: alias, aliasDeployment: alias, expectedDeploymentId: bundle.baselineDeploymentId, expectedDeploymentUrl: previousDeploymentUrl, expectedProjectId: projectId, expectedTeamId: teamId, expectedReleaseSha: bundle.baselineSha });
         }
-        requireThat10(now() < deadline && attempt < Math.ceil(completionTimeoutMs / pollIntervalMs), "Provider completion timed out; retain claim and reconcile existing deployment");
+        requireThat11(now() < deadline && attempt < Math.ceil(completionTimeoutMs / pollIntervalMs), "Provider completion timed out; retain claim and reconcile existing deployment");
         await wait(Math.min(pollIntervalMs, deadline - now()));
       }
       return { deploymentId: verified.deploymentId, releaseSha: verified.releaseSha, projectId, teamId, environment: "production", ...bundle.version === 2 ? { artifactSha256: bundle.artifactSha256 } : {} };
@@ -6485,7 +6824,7 @@ function createVercelEvidenceReader({ projectId, teamId, productionHost, readTok
 }
 
 // infrastructure/release-custody/owner-gate/postgres-ledger.mjs
-var requireThat11 = (value, message) => {
+var requireThat12 = (value, message) => {
   if (!value) throw new Error(message);
 };
 function createPostgresReleaseLedger({ query, policy: sourcePolicy, now = Date.now }) {
@@ -6494,18 +6833,18 @@ function createPostgresReleaseLedger({ query, policy: sourcePolicy, now = Date.n
   return {
     async consume({ rawBundle, approval, evidence }) {
       const bundle = parseBundle(rawBundle, policy, now());
-      requireThat11(approval?.provider === "github" && approval.controlRepository === policy.controlRepository && approval.gateSha === policy.gateSha && approval.ownerId === policy.ownerId && approval.environmentId === policy.environmentId, "Wrong approval authority");
-      requireThat11(Number.isSafeInteger(approval.runId) && approval.runId > 0 && approval.runAttempt === 1 && approval.consumptionKey === `${policy.controlRepository}:${approval.runId}:1`, "Invalid consumption binding");
-      requireThat11(approval.releaseSha === bundle.releaseSha && approval.bundleSha256 === digest(rawBundle) && approval.expiresAt === bundle.expiresAt, "Wrong approved bundle");
-      requireThat11(evidence && typeof evidence === "object" && !Array.isArray(evidence), "Verified evidence required");
+      requireThat12(approval?.provider === "github" && approval.controlRepository === policy.controlRepository && approval.gateSha === policy.gateSha && approval.ownerId === policy.ownerId && approval.environmentId === policy.environmentId, "Wrong approval authority");
+      requireThat12(Number.isSafeInteger(approval.runId) && approval.runId > 0 && approval.runAttempt === 1 && approval.consumptionKey === `${policy.controlRepository}:${approval.runId}:1`, "Invalid consumption binding");
+      requireThat12(approval.releaseSha === bundle.releaseSha && approval.bundleSha256 === digest(rawBundle) && approval.expiresAt === bundle.expiresAt, "Wrong approved bundle");
+      requireThat12(evidence && typeof evidence === "object" && !Array.isArray(evidence), "Verified evidence required");
       const result = await query("SELECT release_gate.consume($1,$2,$3,$4,$5,$6,$7,$8,$9) AS committed", [approval.consumptionKey, target, bundle.releaseSha, approval.bundleSha256, bundle.nonce, digest(JSON.stringify(evidence)), digest(JSON.stringify(approval)), bundle.issuedAt, bundle.expiresAt]);
-      requireThat11(result.rows?.length === 1 && typeof result.rows[0].committed === "boolean", "Invalid ledger response");
+      requireThat12(result.rows?.length === 1 && typeof result.rows[0].committed === "boolean", "Invalid ledger response");
       return { committed: result.rows[0].committed, consumptionKey: approval.consumptionKey };
     },
     async finish({ consumptionKey, receipt }) {
-      requireThat11(receipt?.teamId === policy.teamId && receipt.projectId === policy.projectId && receipt.environment === "production" && /^[a-f0-9]{40}$/.test(receipt.releaseSha) && /^dpl_[A-Za-z0-9]+$/.test(receipt.deploymentId), "Wrong deployment receipt target");
+      requireThat12(receipt?.teamId === policy.teamId && receipt.projectId === policy.projectId && receipt.environment === "production" && /^[a-f0-9]{40}$/.test(receipt.releaseSha) && /^dpl_[A-Za-z0-9]+$/.test(receipt.deploymentId), "Wrong deployment receipt target");
       const result = await query("SELECT release_gate.finish($1,$2,$3,$4::jsonb) AS committed", [consumptionKey, target, receipt.releaseSha, JSON.stringify(receipt)]);
-      requireThat11(result.rows?.length === 1 && typeof result.rows[0].committed === "boolean", "Invalid ledger response");
+      requireThat12(result.rows?.length === 1 && typeof result.rows[0].committed === "boolean", "Invalid ledger response");
       return result.rows[0].committed;
     }
   };
@@ -6517,18 +6856,18 @@ import { isAbsolute } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 var execute = promisify(execFile);
-var requireThat12 = (value, message) => {
+var requireThat13 = (value, message) => {
   if (!value) throw new Error(message);
 };
 function createArtifactProvenanceVerifier({ policy: sourcePolicy, manifestPath, attestationPath, runVerifier }) {
   const policy = structuredClone(sourcePolicy);
-  requireThat12(/^[\w.-]+\/[\w.-]+$/.test(policy.controlRepository) && /^[a-f0-9]{40}$/.test(policy.gateSha), "Reviewed attester identity required");
-  requireThat12(policy.attesterWorkflow === ".github/workflows/prebuilt-builder.yml", "Pinned attester workflow required");
-  requireThat12(isAbsolute(manifestPath) && isAbsolute(attestationPath), "Private absolute artifact paths required");
+  requireThat13(/^[\w.-]+\/[\w.-]+$/.test(policy.controlRepository) && /^[a-f0-9]{40}$/.test(policy.gateSha), "Reviewed attester identity required");
+  requireThat13(policy.attesterWorkflow === ".github/workflows/prebuilt-builder.yml", "Pinned attester workflow required");
+  requireThat13(isAbsolute(manifestPath) && isAbsolute(attestationPath), "Private absolute artifact paths required");
   return async (bundle) => {
     const raw = await readFile(manifestPath, "utf8");
     const manifest = JSON.parse(raw);
-    requireThat12(bundle.version === 2 && (manifest.version === 1 && manifest.aliases === void 0 || manifest.version === 2 && Array.isArray(manifest.aliases) && manifest.aliases.length > 0) && manifest.releaseSha === bundle.releaseSha && manifest.target === "production" && Array.isArray(manifest.files) && digest(raw) === bundle.artifactSha256, "Manifest differs from approved artifact");
+    requireThat13(bundle.version === 2 && (manifest.version === 1 && manifest.aliases === void 0 || manifest.version === 2 && Array.isArray(manifest.aliases) && manifest.aliases.length > 0) && manifest.releaseSha === bundle.releaseSha && manifest.target === "production" && Array.isArray(manifest.files) && digest(raw) === bundle.artifactSha256, "Manifest differs from approved artifact");
     const args = [
       "attestation",
       "verify",
@@ -6554,8 +6893,8 @@ function createArtifactProvenanceVerifier({ policy: sourcePolicy, manifestPath, 
       "json"
     ];
     const verified = JSON.parse(await runVerifier(args));
-    requireThat12(Array.isArray(verified) && verified.length > 0, "No verified provider attestation");
-    requireThat12(verified.some((entry) => entry.verificationResult?.statement?.subject?.some((subject) => subject.digest?.sha256 === bundle.artifactSha256)), "Verified attestation does not cover approved manifest");
+    requireThat13(Array.isArray(verified) && verified.length > 0, "No verified provider attestation");
+    requireThat13(verified.some((entry) => entry.verificationResult?.statement?.subject?.some((subject) => subject.digest?.sha256 === bundle.artifactSha256)), "Verified attestation does not cover approved manifest");
     return Object.freeze({ verified: true, releaseSha: bundle.releaseSha, artifactSha256: bundle.artifactSha256, attesterRepository: policy.controlRepository, attesterSha: policy.gateSha });
   };
 }
@@ -6572,13 +6911,13 @@ import { lstat, readdir, open, realpath, readFile as readFile2, readlink } from 
 import { join, relative, basename, resolve, dirname, isAbsolute as isAbsolute2 } from "node:path";
 import { constants } from "node:fs";
 import { createHash as createHash8 } from "node:crypto";
-var requireThat13 = (value, message) => {
+var requireThat14 = (value, message) => {
   if (!value) throw new Error(message);
 };
 async function inspectPrebuiltArtifact({ outputRoot, releaseSha }) {
-  requireThat13(/^[a-f0-9]{40}$/.test(releaseSha), "Exact artifact source required");
+  requireThat14(/^[a-f0-9]{40}$/.test(releaseSha), "Exact artifact source required");
   const rootStat = await lstat(outputRoot);
-  requireThat13(rootStat.isDirectory() && !rootStat.isSymbolicLink(), "Materialized artifact root required");
+  requireThat14(rootStat.isDirectory() && !rootStat.isSymbolicLink(), "Materialized artifact root required");
   const root = await realpath(outputRoot), files = [], aliases = [];
   let totalBytes = 0;
   async function visit(directory) {
@@ -6588,30 +6927,30 @@ async function inspectPrebuiltArtifact({ outputRoot, releaseSha }) {
       if (stat.isSymbolicLink()) {
         const link = await readlink(path);
         const target = resolve(dirname(path), link), targetKey = relative(root, target).split("\\").join("/");
-        requireThat13(/^functions\/.+\.func$/.test(key) && /^functions\/.+\.func$/.test(targetKey) && !isAbsolute2(link) && !link.includes("\\") && !/[\u0000-\u001f\u007f]/.test(link) && !targetKey.split("/").includes(".."), "Artifact symlink must be an internal function alias");
+        requireThat14(/^functions\/.+\.func$/.test(key) && /^functions\/.+\.func$/.test(targetKey) && !isAbsolute2(link) && !link.includes("\\") && !/[\u0000-\u001f\u007f]/.test(link) && !targetKey.split("/").includes(".."), "Artifact symlink must be an internal function alias");
         const targetStat = await lstat(target);
-        requireThat13(targetStat.isDirectory() && !targetStat.isSymbolicLink() && await realpath(target) === target, "Artifact symlink target must be canonical, not chained");
-        requireThat13((await lstat(join(target, ".vc-config.json"))).isFile(), "Function alias configuration missing");
-        requireThat13(aliases.length < 1e5, "Too many function aliases");
+        requireThat14(targetStat.isDirectory() && !targetStat.isSymbolicLink() && await realpath(target) === target, "Artifact symlink target must be canonical, not chained");
+        requireThat14((await lstat(join(target, ".vc-config.json"))).isFile(), "Function alias configuration missing");
+        requireThat14(aliases.length < 1e5, "Too many function aliases");
         aliases.push({ path: key, link });
         continue;
       }
-      requireThat13(!key.startsWith("../") && !/[\u0000-\u001f\u007f]/.test(key) && !name.includes("\\"), "Invalid artifact path");
-      requireThat13(!/^\.env(?:\.|$)/i.test(basename(path)), "Environment file in artifact");
+      requireThat14(!key.startsWith("../") && !/[\u0000-\u001f\u007f]/.test(key) && !name.includes("\\"), "Invalid artifact path");
+      requireThat14(!/^\.env(?:\.|$)/i.test(basename(path)), "Environment file in artifact");
       if (stat.isDirectory()) {
         await visit(path);
         continue;
       }
-      requireThat13(stat.isFile() && stat.nlink === 1, "Regular non-shared artifact file required");
-      requireThat13(files.length < 1e5 && (totalBytes += stat.size) <= 8 * 1024 ** 3, "Artifact resource limit exceeded");
+      requireThat14(stat.isFile() && stat.nlink === 1, "Regular non-shared artifact file required");
+      requireThat14(files.length < 1e5 && (totalBytes += stat.size) <= 8 * 1024 ** 3, "Artifact resource limit exceeded");
       const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         const before = await handle.stat();
-        requireThat13(before.ino === stat.ino && before.dev === stat.dev && before.size === stat.size, "Artifact changed while opening");
+        requireThat14(before.ino === stat.ino && before.dev === stat.dev && before.size === stat.size, "Artifact changed while opening");
         const hash2 = createHash8("sha256");
         for await (const bytes of handle.createReadStream({ autoClose: false })) hash2.update(bytes);
         const after = await handle.stat();
-        requireThat13(after.size === before.size && after.mtimeMs === before.mtimeMs && after.ctimeMs === before.ctimeMs, "Artifact changed while hashing");
+        requireThat14(after.size === before.size && after.mtimeMs === before.mtimeMs && after.ctimeMs === before.ctimeMs, "Artifact changed while hashing");
         files.push({ path: key, size: before.size, sha256: hash2.digest("hex"), executable: (before.mode & 73) !== 0 });
       } finally {
         await handle.close();
@@ -6620,16 +6959,16 @@ async function inspectPrebuiltArtifact({ outputRoot, releaseSha }) {
   }
   await visit(root);
   files.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
-  requireThat13(files.length > 0 && files.some((file) => file.path === "config.json"), "Build Output API configuration missing");
+  requireThat14(files.length > 0 && files.some((file) => file.path === "config.json"), "Build Output API configuration missing");
   const filePaths = new Set(files.map((file) => file.path));
   for (const file of files.filter((item) => basename(item.path) === ".vc-config.json")) {
     const functionConfig = JSON.parse(await readFile2(join(root, file.path), "utf8"));
     if (functionConfig.filePathMap === void 0) continue;
-    requireThat13(functionConfig.filePathMap !== null && typeof functionConfig.filePathMap === "object" && !Array.isArray(functionConfig.filePathMap), "Invalid function dependency map");
+    requireThat14(functionConfig.filePathMap !== null && typeof functionConfig.filePathMap === "object" && !Array.isArray(functionConfig.filePathMap), "Invalid function dependency map");
     for (const dependency of Object.values(functionConfig.filePathMap)) {
-      requireThat13(typeof dependency === "string" && dependency.startsWith(".vercel/output/") && !dependency.includes("\\") && !dependency.split("/").includes(".."), "Function dependency outside standalone output; build with --standalone");
+      requireThat14(typeof dependency === "string" && dependency.startsWith(".vercel/output/") && !dependency.includes("\\") && !dependency.split("/").includes(".."), "Function dependency outside standalone output; build with --standalone");
       const key = dependency.slice(".vercel/output/".length);
-      requireThat13(filePaths.has(key), "Function dependency missing from artifact");
+      requireThat14(filePaths.has(key), "Function dependency missing from artifact");
     }
   }
   aliases.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
@@ -6637,28 +6976,28 @@ async function inspectPrebuiltArtifact({ outputRoot, releaseSha }) {
   return { manifest, artifactSha256: digest(JSON.stringify(manifest)), fileCount: files.length, totalBytes };
 }
 async function verifyApprovedPrebuiltArtifact({ outputRoot, bundle }) {
-  requireThat13(bundle?.version === 2 && /^[a-f0-9]{64}$/.test(bundle.artifactSha256), "Artifact-bound approval required; legacy bundle refused");
+  requireThat14(bundle?.version === 2 && /^[a-f0-9]{64}$/.test(bundle.artifactSha256), "Artifact-bound approval required; legacy bundle refused");
   const result = await inspectPrebuiltArtifact({ outputRoot, releaseSha: bundle.releaseSha });
-  requireThat13(result.artifactSha256 === bundle.artifactSha256, "Prebuilt artifact differs from approved bundle");
+  requireThat14(result.artifactSha256 === bundle.artifactSha256, "Prebuilt artifact differs from approved bundle");
   return result;
 }
 
 // infrastructure/release-custody/owner-gate/vercel-prebuilt.mjs
-var requireThat14 = (value, message) => {
+var requireThat15 = (value, message) => {
   if (!value) throw new Error(message);
 };
 var execute2 = promisify2(execFile2);
 function createVercelPrebuiltDeployer({ policy: sourcePolicy, outputRoot, verifyProvenance, runCli, baseline, now = Date.now }) {
   const policy = structuredClone(sourcePolicy);
-  requireThat14(/^prj_[A-Za-z0-9]+$/.test(policy.projectId) && /^team_[A-Za-z0-9]+$/.test(policy.teamId), "Pinned provider target required");
-  requireThat14(typeof verifyProvenance === "function" && typeof runCli === "function", "Trusted provenance and upload adapters required");
+  requireThat15(/^prj_[A-Za-z0-9]+$/.test(policy.projectId) && /^team_[A-Za-z0-9]+$/.test(policy.teamId), "Pinned provider target required");
+  requireThat15(typeof verifyProvenance === "function" && typeof runCli === "function", "Trusted provenance and upload adapters required");
   return {
     async deploy({ bundle, approval, beforePromotion }) {
       const raw = JSON.stringify(bundle);
       parseBundle(raw, policy, now());
-      requireThat14(bundle.version === 2 && approval?.bundleSha256 === digest(raw) && approval.releaseSha === bundle.releaseSha && typeof beforePromotion === "function", "Exact consumed artifact approval required");
+      requireThat15(bundle.version === 2 && approval?.bundleSha256 === digest(raw) && approval.releaseSha === bundle.releaseSha && typeof beforePromotion === "function", "Exact consumed artifact approval required");
       const provenance = await verifyProvenance(bundle);
-      requireThat14(provenance?.releaseSha === bundle.releaseSha && provenance.artifactSha256 === bundle.artifactSha256 && provenance.verified === true, "Trusted artifact provenance missing");
+      requireThat15(provenance?.releaseSha === bundle.releaseSha && provenance.artifactSha256 === bundle.artifactSha256 && provenance.verified === true, "Trusted artifact provenance missing");
       await verifyApprovedPrebuiltArtifact({ outputRoot, bundle });
       const workspace = await mkdtemp(join2(tmpdir(), "cadenza-protected-upload-"));
       try {
@@ -6689,7 +7028,7 @@ function createVercelPrebuiltDeployer({ policy: sourcePolicy, outputRoot, verify
           `cadenzaBundleSha256=${approval.bundleSha256}`
         ];
         const result = parseVercelDeployJson(await runCli({ cwd, home, args, beforeStart: () => parseBundle(raw, policy, now()) }));
-        requireThat14(result.deploymentId !== bundle.baselineDeploymentId, "Provider returned baseline deployment");
+        requireThat15(result.deploymentId !== bundle.baselineDeploymentId, "Provider returned baseline deployment");
         return { ...result, artifactSha256: bundle.artifactSha256 };
       } finally {
         await rm(workspace, { recursive: true, force: true });
@@ -6699,13 +7038,13 @@ function createVercelPrebuiltDeployer({ policy: sourcePolicy, outputRoot, verify
 }
 
 // infrastructure/release-custody/owner-gate/github-permissions.mjs
-var requireThat15 = (value, message) => {
+var requireThat16 = (value, message) => {
   if (!value) throw new Error(message);
 };
 function assertOwnerControlledPolicy(policy) {
-  requireThat15(policy?.governanceModel === "AUTOMATED_OWNER_POLICY", "Owner-controlled governance is not enrolled");
-  requireThat15(Number.isSafeInteger(policy.ownerId) && policy.ownerId > 0, "Explicit release owner required");
-  requireThat15(policy.controlRepository !== policy.repository && policy.approvalEnvironment === "owner-release", "Protected release boundary required");
+  requireThat16(policy?.governanceModel === "AUTOMATED_OWNER_POLICY", "Owner-controlled governance is not enrolled");
+  requireThat16(Number.isSafeInteger(policy.ownerId) && policy.ownerId > 0, "Explicit release owner required");
+  requireThat16(policy.controlRepository !== policy.repository && policy.approvalEnvironment === "owner-release", "Protected release boundary required");
   return true;
 }
 
@@ -6729,8 +7068,9 @@ function createControlReleaseRuntime({
   const policy = structuredClone(sourcePolicy);
   if (policy.enabled !== true || policy.deploymentCredentialsAttached !== true) throw Error("Control enrollment disabled");
   assertOwnerControlledPolicy(policy);
+  const ledgerPin = validateReviewedCodeReleaseLedgerPin(productionPolicy?.ledgerPin);
   const readCandidateSchemas = createGithubSchemaReader({ repository: policy.repository, readJson: readSourceJson });
-  const readCandidateMigrations = createGithubMigrationReader({ repository: policy.repository, readJson: readSourceJson });
+  const readCandidateMigrations = memoizeBySha(createGithubMigrationReader({ repository: policy.repository, readJson: readSourceJson }));
   const vercel = createVercelEvidenceReader({
     projectId: policy.projectId,
     teamId: policy.teamId,
@@ -6741,15 +7081,38 @@ function createControlReleaseRuntime({
   });
   const composedObserver = createMigrationFreeObserver({
     github: createGithubEvidenceReader({ repository: policy.repository, workflowPath: ".github/workflows/ci.yml", readJson: readSourceJson }),
-    database: createDatabaseEvidenceReader({ policy: productionPolicy, readConnection: readProductionConnection, readCandidateMigrations }),
+    database: createDatabaseEvidenceReader({ policy: productionPolicy, readConnection: readProductionConnection, readCandidateMigrations, ledgerPin }),
     schema: createSchemaEvidenceReader({ policy: productionPolicy, readConnection: readProductionConnection, readCandidateSchemas }),
     vercel,
     readCandidateSchemas,
     now
   });
+  const schemaForwardEnabled = policy.allowSchemaForward === true && productionPolicy.schemaTransition !== void 0;
+  let schemaForwardObserver = null;
+  const getSchemaForwardObserver = () => {
+    if (!schemaForwardEnabled) throw Error("Schema-forward mode is not enabled by the control and observer policies");
+    if (!schemaForwardObserver) {
+      const { transition } = readSchemaTransition(productionPolicy.schemaTransition);
+      const postLedgerPin = validateReviewedCodeReleaseLedgerPin(transition.ledger);
+      if (Object.keys(ledgerPin).some((key) => ledgerPin[key] !== postLedgerPin[key])) throw Error("Schema-forward ledger differs from protected production ledger pin");
+      const transitionPolicy = { ...structuredClone(productionPolicy), runtimeManifest: transition.runtimeManifest, schemaProof: transition.to };
+      schemaForwardObserver = createSchemaForwardObserver({
+        github: createGithubEvidenceReader({ repository: policy.repository, workflowPath: ".github/workflows/ci.yml", readJson: readSourceJson }),
+        database: createDatabaseEvidenceReader({ policy: transitionPolicy, readConnection: readProductionConnection, readCandidateMigrations, ledgerPin: transition.ledger }),
+        schema: createSchemaEvidenceReader({ policy: transitionPolicy, readConnection: readProductionConnection, readCandidateSchemas }),
+        vercel,
+        readCandidateSchemas,
+        readCandidateMigrations,
+        schemaTransition: productionPolicy.schemaTransition,
+        now
+      });
+    }
+    return schemaForwardObserver;
+  };
   let baselineUrl;
   const observer = { async collect(bundle) {
-    const evidence = await composedObserver.collect(bundle);
+    const selected = bundle.mode === "AUTOMATED_SCHEMA_FORWARD" ? getSchemaForwardObserver() : composedObserver;
+    const evidence = await selected.collect(bundle);
     baselineUrl = evidence.recovery.baselineUrl;
     return evidence;
   } };
