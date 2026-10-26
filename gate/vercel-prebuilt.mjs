@@ -26,10 +26,13 @@ var fields = ["version", "mode", "repository", "releaseSha", "projectId", "teamI
 function parseBundle(raw, policy, now) {
   requireThat(typeof raw === "string" && Buffer.byteLength(raw) <= 16384, "Invalid bundle size");
   const bundle = JSON.parse(raw);
-  const wireFields = bundle?.version === 2 ? [...fields, "artifactSha256"] : fields;
+  const schemaForward = bundle?.mode === "AUTOMATED_SCHEMA_FORWARD";
+  const wireFields = [...fields, ...bundle?.version === 2 ? ["artifactSha256"] : [], ...schemaForward ? ["schemaTransitionSha256"] : []];
   requireThat(bundle && Object.keys(bundle).sort().join(",") === [...wireFields].sort().join(","), "Unexpected bundle fields");
   requireThat(JSON.stringify(Object.fromEntries(wireFields.map((key) => [key, bundle[key]]))) === raw, "Noncanonical bundle");
-  requireThat([1, 2].includes(bundle.version) && bundle.mode === (policy.governanceModel === "AUTOMATED_OWNER_POLICY" ? "AUTOMATED_MIGRATION_FREE" : "OWNER_APPROVED_MIGRATION_FREE"), "Unsupported authorization mode");
+  const allowedModes = policy.governanceModel === "AUTOMATED_OWNER_POLICY" ? ["AUTOMATED_MIGRATION_FREE", ...policy.allowSchemaForward === true ? ["AUTOMATED_SCHEMA_FORWARD"] : []] : ["OWNER_APPROVED_MIGRATION_FREE"];
+  requireThat([1, 2].includes(bundle.version) && allowedModes.includes(bundle.mode), "Unsupported authorization mode");
+  if (schemaForward) requireThat(hex(bundle.schemaTransitionSha256, 64), "Exact schema transition digest required");
   if (bundle.version === 2) requireThat(hex(bundle.artifactSha256, 64), "Exact prebuilt artifact digest required");
   for (const key of ["repository", "projectId", "teamId", "environment", "policyVersion"]) {
     requireThat(bundle[key] === policy[key], `Wrong ${key}`);
