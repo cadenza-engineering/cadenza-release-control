@@ -33,9 +33,10 @@
       "Lint \u00b7 Typecheck \u00b7 Unit tests",
       "Migration drift (strict known-baseline classifier)",
       "Production build \u00b7 e2e smoke (isolated DB)"
-    ]
+    ],
+    "allowSchemaForward": true
   },
-  "productionPolicySha256": "f7428d78faea772943f8d80928d9b17b6626167365c2e96bc162104ca19ff509",
+  "productionPolicySha256": "0203767fde52af656938f00831a44d1f88161792f0b2b1296d7d6cc30adb59c0",
   "ledgerPolicy": {
     "hostname": "ep-solitary-river-au47quiq.c-10.us-east-1.aws.neon.tech",
     "database": "release_control",
