@@ -29,4 +29,4 @@ This gate permits migration-free application releases only. Schema/data mutation
 
 ## Protected production ledger pin
 
-The observer policy must contain an exact `ledgerPin` with `ledgerSha256`, `successfulCount` and `rolledBackCount`. The packaged production runtime requires it before provider or credential reads; the schema-forward transition must bind the same pin. The current policy preserves the independently verified 212 successful / 4 rolled-back ledger, schema and runtime manifest. Schema-forward remains disabled until a separate reviewed post-migration transition is pinned. The observer never executes database DDL.
+The observer policy must contain an exact `ledgerPin` with `ledgerSha256`, `successfulCount` and `rolledBackCount`. The packaged production runtime requires it before provider or credential reads; the schema-forward transition must bind the same pin. The current routine policy preserves the independently verified 213 successful / 4 rolled-back ledger, completed Hiring calendar schema and unchanged runtime manifest. The completed calendar transition has been removed and schema-forward is disabled. The observer never executes database DDL.
