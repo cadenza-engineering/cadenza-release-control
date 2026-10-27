@@ -3,13 +3,13 @@
   "files": [
     {
       "path": "README.md",
-      "sha256": "ba99d799312cf6a3eb9cc882ff4c524bae91f4ecb72048919112c3817e97740c",
-      "bytes": 5528
+      "sha256": "5950464f48a539f6c884c393db87fd7bc35ce4d1d0d00d3b59027a572e20ac66",
+      "bytes": 5560
     },
     {
       "path": "enrollment.json",
-      "sha256": "a6742f7d1723e4921cfabc528cbe4e4b86156a0455c10ed17883929dc9e2f2e7",
-      "bytes": 2261
+      "sha256": "15b7bfa7b871aeca3e2be5953fe153d2245da4d11b335dbc5484b87d5292c40d",
+      "bytes": 2229
     },
     {
       "path": "execute-release.mjs",
